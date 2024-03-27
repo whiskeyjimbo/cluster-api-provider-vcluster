@@ -2,7 +2,7 @@ version: v2beta1
 name: cluster-api-provider-vcluster
 
 vars:
-  IMAGE: loftsh/cluster-api-provider-vcluster
+  IMAGE: whiskeyjimbo/cluster-api-provider-vcluster
 
 images:
   provider:

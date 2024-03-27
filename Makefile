@@ -1,9 +1,9 @@
 
 TAG ?= main
 # Image URL to use all building/pushing image targets
-IMG ?= docker.io/loftsh/cluster-api-provider-vcluster:$(TAG)
+IMG ?= docker.io/whiskeyjimbo/cluster-api-provider-vcluster:$(TAG)
 # ENVTEST_K8S_VERSION refers to the version of kubebuilder assets to be downloaded by envtest binary.
-ENVTEST_K8S_VERSION = 1.23
+ENVTEST_K8S_VERSION = 1.29
 
 # Get the currently used golang install path (in GOPATH/bin, unless GOBIN is set)
 ifeq (,$(shell go env GOBIN))
@@ -71,7 +71,8 @@ run: manifests generate fmt vet ## Run a controller from your host.
 	go run ./main.go
 
 .PHONY: docker-build
-docker-build: test ## Build docker image with the manager.
+# docker-build: test ## Build docker image with the manager.
+docker-build: ## Build docker image with the manager.
 	docker build -t ${IMG} .
 
 .PHONY: docker-push
@@ -140,6 +141,6 @@ release: manifests kustomize ## Builds the manifests to publish with a release.
 	cp templates/cluster-template* $(RELEASE_DIR)/
 	cp metadata.yaml $(RELEASE_DIR)/metadata.yaml
 # revert the values back to development ones 
-	sed -i'' -e 's@image: .*@image: docker.io/loftsh/cluster-api-provider-vcluster:main@' ./config/default/manager_image_patch.yaml
+	sed -i'' -e 's@image: .*@image: docker.io/whiskeyjimbo/cluster-api-provider-vcluster:main@' ./config/default/manager_image_patch.yaml
 	sed -i'' -e 's@imagePullPolicy: '"$(PULL_POLICY)"'@imagePullPolicy: IfNotPresent@' ./config/default/manager_pull_policy_patch.yaml
 	sed -i'' -e 's@name: $${CLUSTER_ROLE:=cluster-admin}@name: cluster-admin@' ./config/rbac/provider_role_binding.yaml
