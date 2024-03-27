@@ -1,3 +1,13 @@
+Fixed Fork of cluster-api-provider-vcluster to allow for new vcluster version and kubernetes versions
+
+Modify `~/.cluster-api/clusterctl.yaml` with the following:
+```shell
+providers:
+- name: vcluster
+  url: https://github.com/whiskeyjimbo/cluster-api-provider-vcluster/releases/latest/infrastructure-components.yaml
+  type: InfrastructureProvider  
+```
+
 # About
 
 This is a [Cluster API](https://cluster-api.sigs.k8s.io/introduction.html) provider for the [vcluster project](https://www.vcluster.com/) - create fully functional virtual Kubernetes clusters.
