@@ -130,6 +130,10 @@ spec:
                 description: Initialized defines if the virtual cluster control plane
                   was initialized.
                 type: boolean
+              kubernetesVersion:
+                description: KubernetesVersion is the version of Kubernetes running
+                  in the virtual cluster
+                type: string
               message:
                 description: |-
                   Message describes the reason in human readable form why the cluster is in the currrent
