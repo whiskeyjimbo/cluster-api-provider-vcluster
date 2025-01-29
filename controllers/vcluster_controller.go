@@ -412,12 +412,11 @@ func (r *VClusterReconciler) syncVClusterKubeconfig(ctx context.Context, vCluste
 			},
 		},
 		Type: clusterv1beta1.ClusterSecretType,
+		Data: map[string][]byte{
+			KubeconfigDataName: outKubeConfig,
+		},
 	}
 	_, err = controllerutil.CreateOrPatch(ctx, r.Client, kubeSecret, func() error {
-		if kubeSecret.Data == nil {
-			kubeSecret.Data = make(map[string][]byte)
-		}
-		kubeSecret.Data[KubeconfigDataName] = outKubeConfig
 		return nil
 	})
 	if err != nil {
