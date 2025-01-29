@@ -133,6 +133,7 @@ const (
 //+kubebuilder:object:root=true
 //+kubebuilder:subresource:status
 //+kubebuilder:printcolumn:name="Version",type="string",JSONPath=".spec.helmRelease.chart.version"
+//+kubebuilder:printcolumn:name="KubernetesVersion",type="string",JSONPath=".status.kubernetesVersion"
 //+kubebuilder:printcolumn:name="Ready",type="boolean",JSONPath=".status.ready"
 //+kubebuilder:printcolumn:name="Phase",type="string",JSONPath=".status.phase"
 //+kubebuilder:printcolumn:name="Message",type="string",JSONPath=".status.message"

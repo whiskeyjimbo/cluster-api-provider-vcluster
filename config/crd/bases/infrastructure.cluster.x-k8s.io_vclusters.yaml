@@ -18,6 +18,9 @@ spec:
     - jsonPath: .spec.helmRelease.chart.version
       name: Version
       type: string
+    - jsonPath: .status.kubernetesVersion
+      name: KubernetesVersion
+      type: string
     - jsonPath: .status.ready
       name: Ready
       type: boolean
