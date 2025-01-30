@@ -44,6 +44,7 @@ import (
 	"sigs.k8s.io/controller-runtime/pkg/client"
 	"sigs.k8s.io/controller-runtime/pkg/controller/controllerutil"
 
+	"github.com/google/uuid"
 	v1alpha1 "github.com/loft-sh/cluster-api-provider-vcluster/api/v1alpha1"
 	"github.com/loft-sh/cluster-api-provider-vcluster/pkg/constants"
 	"github.com/loft-sh/cluster-api-provider-vcluster/pkg/helm"
@@ -111,7 +112,9 @@ const (
 )
 
 func (r *VClusterReconciler) Reconcile(ctx context.Context, req ctrl.Request) (_ ctrl.Result, reterr error) {
-	r.Log.V(1).Info("Reconcile", "namespacedName", req.NamespacedName)
+	r.Log.V(1).Info("Starting reconciliation",
+		"namespacedName", req.NamespacedName,
+		"reconcileID", uuid.New().String()[:8]) // Add a unique ID to trace this reconciliation
 
 	// get virtual cluster object
 	vCluster := &v1alpha1.VCluster{}
@@ -195,9 +198,16 @@ func (r *VClusterReconciler) Reconcile(ctx context.Context, req ctrl.Request) (_
 	}()
 
 	// check if we have to redeploy
+	r.Log.V(1).Info("Checking if redeploy is needed",
+		"namespace", vCluster.Namespace,
+		"name", vCluster.Name,
+		"generation", vCluster.Generation,
+		"observedGeneration", vCluster.Status.ObservedGeneration,
+		"helmChartDeployed", conditions.IsTrue(vCluster, v1alpha1.HelmChartDeployedCondition))
+
 	err = r.redeployIfNeeded(ctx, vCluster)
 	if err != nil {
-		r.Log.Error(err, "error during virtual cluster deploy",
+		r.Log.Error(err, "Error during virtual cluster deploy",
 			"namespace", vCluster.Namespace,
 			"name", vCluster.Name,
 		)
@@ -227,96 +237,139 @@ func (r *VClusterReconciler) Reconcile(ctx context.Context, req ctrl.Request) (_
 }
 
 func (r *VClusterReconciler) reconcilePhase(vCluster *v1alpha1.VCluster) {
-	logger := r.Log
+	logger := r.Log.WithValues(
+		"currentPhase", vCluster.Status.Phase)
+
 	oldPhase := vCluster.Status.Phase
+	oldReason := vCluster.Status.Reason
+	oldMessage := vCluster.Status.Message
 
 	// Check for failed state first
+	failedCondition := false
 	for _, condition := range vCluster.Status.Conditions {
 		if condition.Status == corev1.ConditionFalse && condition.Severity == v1alpha1.ConditionSeverityError {
 			vCluster.Status.Phase = v1alpha1.VirtualClusterFailed
 			vCluster.Status.Reason = condition.Reason
 			vCluster.Status.Message = condition.Message
+			failedCondition = true
+			logger.V(1).Info("Found failed condition",
+				"condition", condition.Type,
+				"reason", condition.Reason,
+				"message", condition.Message)
 			break
 		}
 	}
 
 	// If not failed, check if deployed or pending
-	if vCluster.Status.Phase != v1alpha1.VirtualClusterFailed {
+	if !failedCondition {
 		if vCluster.Status.Ready && conditions.IsTrue(vCluster, v1alpha1.ControlPlaneInitializedCondition) {
 			vCluster.Status.Phase = v1alpha1.VirtualClusterDeployed
+			// Clear reason and message when transitioning to deployed state
+			vCluster.Status.Reason = ""
+			vCluster.Status.Message = ""
+			logger.V(1).Info("VCluster is ready and initialized")
 		} else {
 			vCluster.Status.Phase = v1alpha1.VirtualClusterPending
+			logger.V(1).Info("VCluster is pending",
+				"ready", vCluster.Status.Ready,
+				"initialized", conditions.IsTrue(vCluster, v1alpha1.ControlPlaneInitializedCondition))
 		}
 	}
 
 	// Log phase transitions
-	if oldPhase != vCluster.Status.Phase {
+	if oldPhase != vCluster.Status.Phase ||
+		oldReason != vCluster.Status.Reason ||
+		oldMessage != vCluster.Status.Message {
 		logger.Info("vcluster phase changed",
-			"namespace", vCluster.Namespace,
-			"name", vCluster.Name,
 			"oldPhase", oldPhase,
 			"newPhase", vCluster.Status.Phase,
-			"reason", vCluster.Status.Reason,
-			"message", vCluster.Status.Message,
+			"oldReason", oldReason,
+			"newReason", vCluster.Status.Reason,
+			"oldMessage", oldMessage,
+			"newMessage", vCluster.Status.Message,
 		)
 	}
 }
 
 func (r *VClusterReconciler) redeployIfNeeded(_ context.Context, vCluster *v1alpha1.VCluster) error {
+	logger := r.Log.WithValues(
+		"namespace", vCluster.Namespace,
+		"name", vCluster.Name,
+		"generation", vCluster.Generation,
+		"observedGeneration", vCluster.Status.ObservedGeneration,
+		"phase", vCluster.Status.Phase)
+
+	// Add additional check to prevent redeployment loops
 	if vCluster.Generation == vCluster.Status.ObservedGeneration &&
-		conditions.IsTrue(vCluster, v1alpha1.HelmChartDeployedCondition) {
+		conditions.IsTrue(vCluster, v1alpha1.HelmChartDeployedCondition) &&
+		vCluster.Status.Phase != v1alpha1.VirtualClusterFailed {
+		logger.V(1).Info("Skipping redeploy - no changes detected and not in failed state")
 		return nil
 	}
 
-	logger := r.Log
+	// If we're transitioning from failed state, log it
+	if vCluster.Status.Phase == v1alpha1.VirtualClusterFailed {
+		logger.Info("Attempting recovery from failed state",
+			"reason", vCluster.Status.Reason,
+			"message", vCluster.Status.Message)
+	}
+
+	logger.V(1).Info("Changes detected",
+		"generationChanged", vCluster.Generation != vCluster.Status.ObservedGeneration,
+		"helmChartDeployed", conditions.IsTrue(vCluster, v1alpha1.HelmChartDeployedCondition),
+		"phase", vCluster.Status.Phase)
 
 	var values string
-	if vCluster.Spec.HelmRelease != nil || vCluster.Spec.HelmRelease.Values == "" {
+	if vCluster.Spec.HelmRelease != nil && vCluster.Spec.HelmRelease.Values != "" {
 		values = vCluster.Spec.HelmRelease.Values
-	}
-	if !conditions.IsTrue(vCluster, v1alpha1.HelmChartDeployedCondition) {
-		logger.Info("deploying vcluster",
-			"namespace", vCluster.Namespace,
-			"clusterName", vCluster.Name,
-			"values", values,
-		)
-	} else {
-		logger.V(1).Info("upgrading vcluster",
-			"namespace", vCluster.Namespace,
-			"clusterName", vCluster.Name,
-		)
+		logger.V(1).Info("Using custom helm values", "valuesLength", len(values))
 	}
 
-	var chartRepo string
-	if vCluster.Spec.HelmRelease != nil {
-		chartRepo = vCluster.Spec.HelmRelease.Chart.Repo
+	// Validate and get chart details
+	if vCluster.Spec.HelmRelease == nil {
+		logger.V(1).Info("No HelmRelease specified in spec")
+		return fmt.Errorf("helmRelease configuration is required")
 	}
+
+	// Get chart repo
+	chartRepo := vCluster.Spec.HelmRelease.Chart.Repo
 	if chartRepo == "" {
 		chartRepo = constants.DefaultVClusterRepo
+		logger.V(1).Info("Using default chart repo", "repo", chartRepo)
+	} else {
+		logger.V(1).Info("Using custom chart repo", "repo", chartRepo)
 	}
 
-	// chart name
-	var chartName string
-	if vCluster.Spec.HelmRelease != nil {
-		chartName = vCluster.Spec.HelmRelease.Chart.Name
-	}
+	// Get chart name
+	chartName := vCluster.Spec.HelmRelease.Chart.Name
 	if chartName == "" {
 		chartName = constants.DefaultVClusterChartName
+		logger.V(1).Info("Using default chart name", "name", chartName)
+	} else {
+		logger.V(1).Info("Using custom chart name", "name", chartName)
 	}
 
-	if vCluster.Spec.HelmRelease == nil || vCluster.Spec.HelmRelease.Chart.Version == "" {
-		return fmt.Errorf("empty value of the .spec.HelmRelease.Version field")
+	// Version validation and processing
+	if vCluster.Spec.HelmRelease.Chart.Version == "" {
+		return fmt.Errorf("empty value of the .spec.HelmRelease.Chart.Version field")
 	}
-	// chart version
+
 	chartVersion := vCluster.Spec.HelmRelease.Chart.Version
-
 	if len(chartVersion) > 0 && chartVersion[0] == 'v' {
 		chartVersion = chartVersion[1:]
+		logger.V(1).Info("Stripped 'v' prefix from version", "originalVersion", vCluster.Spec.HelmRelease.Chart.Version, "processedVersion", chartVersion)
 	}
+
+	logger.Info("Preparing to deploy/upgrade vcluster",
+		"chartName", chartName,
+		"chartVersion", chartVersion,
+		"chartRepo", chartRepo,
+		"hasCustomValues", values != "")
 
 	chartPath := "./" + chartName + "-" + chartVersion + ".tgz"
 	_, err := os.Stat(chartPath)
 	if err != nil {
+		logger.V(1).Info("Chart not found locally, will fetch from repo", "chartPath", chartPath)
 		// we have to upgrade / install the chart
 		err = r.HelmClient.Upgrade(vCluster.Name, vCluster.Namespace, helm.UpgradeOptions{
 			Chart:   chartName,
@@ -325,20 +378,23 @@ func (r *VClusterReconciler) redeployIfNeeded(_ context.Context, vCluster *v1alp
 			Values:  values,
 		})
 	} else {
+		logger.V(1).Info("Using local chart file", "chartPath", chartPath)
 		// we have to upgrade / install the chart
 		err = r.HelmClient.Upgrade(vCluster.Name, vCluster.Namespace, helm.UpgradeOptions{
 			Path:   chartPath,
 			Values: values,
 		})
 	}
+
 	if err != nil {
 		if len(err.Error()) > 512 {
 			err = fmt.Errorf("%v ... ", err.Error()[:512])
 		}
-
+		logger.Error(err, "Helm upgrade/install failed")
 		return fmt.Errorf("error installing / upgrading vcluster: %w", err)
 	}
 
+	logger.Info("Successfully deployed/upgraded vcluster")
 	conditions.MarkTrue(vCluster, v1alpha1.HelmChartDeployedCondition)
 	conditions.Delete(vCluster, v1alpha1.KubeconfigReadyCondition)
 
